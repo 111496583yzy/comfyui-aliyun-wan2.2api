@@ -8,6 +8,7 @@ import json
 import base64
 import requests
 import time
+import random
 from typing import Dict, Any, Optional, Tuple
 import folder_paths
 import numpy as np
@@ -196,6 +197,13 @@ class AliyunTextToVideo(AliyunVideoBase):
                     "label_on": "显示水印",
                     "label_off": "隐藏水印"
                 }),
+                "seed": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 2147483647,
+                    "step": 1,
+                    "tooltip": "随机种子，-1为随机生成"
+                }),
             }
         }
     
@@ -206,13 +214,17 @@ class AliyunTextToVideo(AliyunVideoBase):
     
     def generate_video(self, api_key: str, prompt: str, model: str, size: str, 
                       negative_prompt: str = "", duration: int = 5, 
-                      prompt_extend: bool = True, watermark: bool = False) -> Tuple[str]:
+                      prompt_extend: bool = True, watermark: bool = False, seed: int = -1) -> Tuple[str]:
         """生成文生视频"""
         # 设置API密钥
         self.set_api_key(api_key)
         
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
+        
+        # 处理随机种子
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
         
         payload = {
             "model": english_model,
@@ -223,7 +235,8 @@ class AliyunTextToVideo(AliyunVideoBase):
                 "size": size,
                 "duration": duration,
                 "prompt_extend": prompt_extend,
-                "watermark": watermark
+                "watermark": watermark,
+                "seed": seed
             }
         }
         
@@ -284,6 +297,13 @@ class AliyunImageToVideo(AliyunVideoBase):
                     "label_on": "显示水印",
                     "label_off": "隐藏水印"
                 }),
+                "seed": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 2147483647,
+                    "step": 1,
+                    "tooltip": "随机种子，-1为随机生成"
+                }),
             }
         }
     
@@ -293,7 +313,7 @@ class AliyunImageToVideo(AliyunVideoBase):
     CATEGORY = "Aliyun Video"
     
     def generate_video(self, api_key: str, image: torch.Tensor, prompt: str, model: str, 
-                      resolution: str, prompt_extend: bool = True, watermark: bool = False) -> Tuple[str]:
+                      resolution: str, prompt_extend: bool = True, watermark: bool = False, seed: int = -1) -> Tuple[str]:
         """生成图生视频"""
         # 设置API密钥
         self.set_api_key(api_key)
@@ -304,6 +324,10 @@ class AliyunImageToVideo(AliyunVideoBase):
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
         
+        # 处理随机种子
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
+        
         payload = {
             "model": english_model,
             "input": {
@@ -313,7 +337,8 @@ class AliyunImageToVideo(AliyunVideoBase):
             "parameters": {
                 "resolution": resolution,
                 "prompt_extend": prompt_extend,
-                "watermark": watermark
+                "watermark": watermark,
+                "seed": seed
             }
         }
         
@@ -369,6 +394,13 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
                     "label_on": "显示水印",
                     "label_off": "隐藏水印"
                 }),
+                "seed": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 2147483647,
+                    "step": 1,
+                    "tooltip": "随机种子，-1为随机生成"
+                }),
             }
         }
     
@@ -379,7 +411,7 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
     
     def generate_video(self, api_key: str, first_frame: torch.Tensor, last_frame: torch.Tensor, 
                       prompt: str, model: str, resolution: str, 
-                      prompt_extend: bool = True, watermark: bool = False) -> Tuple[str]:
+                      prompt_extend: bool = True, watermark: bool = False, seed: int = -1) -> Tuple[str]:
         """生成首尾帧视频"""
         # 设置API密钥
         self.set_api_key(api_key)
@@ -391,6 +423,10 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
         
+        # 处理随机种子
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
+        
         payload = {
             "model": english_model,
             "input": {
@@ -401,7 +437,8 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
             "parameters": {
                 "resolution": resolution,
                 "prompt_extend": prompt_extend,
-                "watermark": watermark
+                "watermark": watermark,
+                "seed": seed
             }
         }
         
@@ -482,6 +519,13 @@ class AliyunVideoEffects(AliyunVideoBase):
                 "resolution": (["480P", "720P"], {
                     "default": "720P"
                 }),
+                "seed": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 2147483647,
+                    "step": 1,
+                    "tooltip": "随机种子，-1为随机生成"
+                }),
             }
         }
     
@@ -491,7 +535,7 @@ class AliyunVideoEffects(AliyunVideoBase):
     CATEGORY = "Aliyun Video"
     
     def generate_video(self, api_key: str, image: torch.Tensor, template: str, 
-                      model: str, resolution: str) -> Tuple[str]:
+                      model: str, resolution: str, seed: int = -1) -> Tuple[str]:
         """生成视频特效"""
         # 设置API密钥
         self.set_api_key(api_key)
@@ -504,6 +548,10 @@ class AliyunVideoEffects(AliyunVideoBase):
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
         
+        # 处理随机种子
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
+        
         payload = {
             "model": english_model,
             "input": {
@@ -511,7 +559,8 @@ class AliyunVideoEffects(AliyunVideoBase):
                 "template": english_template
             },
             "parameters": {
-                "resolution": resolution
+                "resolution": resolution,
+                "seed": seed
             }
         }
         
