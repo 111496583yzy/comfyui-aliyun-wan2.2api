@@ -13,7 +13,17 @@ from typing import Dict, Any, Optional, Tuple
 import folder_paths
 import numpy as np
 from PIL import Image
+import sys
 import torch
+
+def print_progress_bar(current: int, total: int, prefix: str = '', suffix: str = '', length: int = 50):
+    """打印进度条"""
+    percent = ("{0:.1f}").format(100 * (current / float(total)))
+    filled_length = int(length * current // total)
+    bar = '█' * filled_length + '-' * (length - filled_length)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', flush=True)
+    if current == total:
+        print()
 
 class AliyunAPIKey:
     """阿里云API密钥配置节点"""
@@ -48,7 +58,7 @@ class AliyunVideoBase:
     def __init__(self):
         # 不在初始化时设置API密钥，而是在调用时设置
         self.api_key = None
-        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis"
+        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/video-synthesis"
         self.headers = None
     
     def set_api_key(self, api_key: str):
@@ -68,6 +78,10 @@ class AliyunVideoBase:
         # 转换张量格式
         if len(image_tensor.shape) == 4:
             image_tensor = image_tensor.squeeze(0)
+        
+        # 确保张量格式为 (C, H, W)
+        if image_tensor.shape[0] == 3:  # RGB格式
+            image_tensor = image_tensor.permute(1, 2, 0)  # 转换为 (H, W, C)
         
         # 转换为PIL图像
         image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
@@ -97,9 +111,20 @@ class AliyunVideoBase:
         
         return result['output']['task_id']
     
-    def wait_for_completion(self, task_id: str, timeout: int = 300) -> str:
+    def wait_for_completion(self, task_id: str, timeout: int = 300, model: str = None) -> str:
         """等待任务完成并返回视频URL"""
+        # 根据模型类型设置不同的超时时间
+        if model and "wanx2.1" in model:
+            timeout = 900  # 2.1模型需要更长时间，设置为15分钟
+            print(f"检测到2.1模型，超时时间设置为{timeout}秒")
+        elif model and "wan2.2" in model:
+            timeout = 300  # 2.2模型保持5分钟
+            print(f"检测到2.2模型，超时时间设置为{timeout}秒")
+        
         start_time = time.time()
+        poll_interval = 15  # 根据官方文档建议，轮询间隔设置为15秒
+        
+        print(f"开始等待任务完成，超时时间: {timeout}秒，轮询间隔: {poll_interval}秒")
         
         while time.time() - start_time < timeout:
             # 查询任务状态 - 使用GET方法查询任务
@@ -115,19 +140,47 @@ class AliyunVideoBase:
             if response.status_code == 200:
                 result = response.json()
                 status = result['output']['task_status']
+                elapsed_time = int(time.time() - start_time)
                 
-                if status == 'SUCCEEDED':
-                    return result['output']['video_url']
+                # 检查是否有video_url字段，即使状态还是RUNNING
+                video_url = result['output'].get('video_url')
+                
+                if status == 'SUCCEEDED' or video_url:
+                    if video_url and status != 'SUCCEEDED':
+                        print(f"检测到video_url，任务实际已完成但状态未更新")
+                    print_progress_bar(100, 100, prefix='任务完成', suffix=f'耗时:{elapsed_time}s')
+                    print(f"任务成功完成，耗时: {elapsed_time}秒")
+                    return video_url
                 elif status == 'FAILED':
-                    raise Exception(f"视频生成失败: {result['output'].get('message', '未知错误')}")
+                    error_msg = result['output'].get('message', '未知错误')
+                    print(f"任务失败: {error_msg}")
+                    raise Exception(f"视频生成失败: {error_msg}")
                 elif status in ['PENDING', 'RUNNING']:
-                    print(f"任务状态: {status}, 等待中...")
-                    time.sleep(10)
+                    remaining_time = timeout - elapsed_time
+                    progress_percent = min(95, (elapsed_time / timeout) * 100)  # 最多显示95%，避免过早完成
+                    
+                    if status == 'PENDING':
+                        status_text = "排队中"
+                    else:
+                        status_text = "处理中"
+                    
+                    # 对于2.1模型，添加额外的状态检查信息
+                    if model and "wanx2.1" in model:
+                        print(f"2.1模型状态检查: {status}, video_url: {'存在' if video_url else '不存在'}")
+                    
+                    print_progress_bar(
+                        int(progress_percent), 
+                        100, 
+                        prefix=f'任务{status_text}', 
+                        suffix=f'{elapsed_time}s/{timeout}s 剩余:{remaining_time}s'
+                    )
+                    time.sleep(poll_interval)
                 else:
+                    print(f"未知任务状态: {status}")
                     raise Exception(f"未知任务状态: {status}")
             else:
                 print(f"查询任务状态失败: {response.status_code} - {response.text}")
-                time.sleep(10)
+                time.sleep(poll_interval)
         
         raise Exception(f"任务超时 ({timeout}秒)")
     
@@ -244,10 +297,11 @@ class AliyunTextToVideo(AliyunVideoBase):
             payload["input"]["negative_prompt"] = negative_prompt
         
         print(f"开始生成视频: {prompt}")
+        print(f"使用模型: {english_model}")
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
         
-        video_url = self.wait_for_completion(task_id)
+        video_url = self.wait_for_completion(task_id, model=english_model)
         print(f"视频生成完成: {video_url}")
         
         video_path = self.download_video(video_url)
@@ -343,10 +397,11 @@ class AliyunImageToVideo(AliyunVideoBase):
         }
         
         print(f"开始生成图生视频: {prompt}")
+        print(f"使用模型: {english_model}")
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
         
-        video_url = self.wait_for_completion(task_id)
+        video_url = self.wait_for_completion(task_id, model=english_model)
         print(f"视频生成完成: {video_url}")
         
         video_path = self.download_video(video_url)
@@ -358,8 +413,14 @@ class AliyunImageToVideo(AliyunVideoBase):
 class AliyunFirstLastFrameToVideo(AliyunVideoBase):
     """阿里云首尾帧生视频节点"""
     
+    def __init__(self):
+        super().__init__()
+        # 首尾帧生视频使用相同的API端点
+        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/video-synthesis"
+    
     # 中文到英文的模型映射
     MODEL_MAPPING = {
+        "万相2.2-首尾帧生视频-极速版": "wan2.2-kf2v-flash",
         "万相2.1-首尾帧生视频-增强版": "wanx2.1-kf2v-plus"
     }
     
@@ -376,10 +437,10 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
                     "multiline": True,
                     "default": "从第一帧到最后一帧的平滑过渡"
                 }),
-                "model": (["万相2.1-首尾帧生视频-增强版"], {
-                    "default": "万相2.1-首尾帧生视频-增强版"
+                "model": (["万相2.2-首尾帧生视频-极速版", "万相2.1-首尾帧生视频-增强版"], {
+                    "default": "万相2.2-首尾帧生视频-极速版"
                 }),
-                "resolution": (["720P"], {
+                "resolution": (["480P", "720P", "1080P"], {
                     "default": "720P"
                 }),
             },
@@ -423,6 +484,11 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
         
+        # 验证分辨率与模型的兼容性
+        if english_model == "wanx2.1-kf2v-plus" and resolution != "720P":
+            print(f"警告: {model} 只支持720P分辨率，已自动调整为720P")
+            resolution = "720P"
+        
         # 处理随机种子
         if seed == -1:
             seed = random.randint(0, 2147483647)
@@ -443,10 +509,11 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
         }
         
         print(f"开始生成首尾帧视频: {prompt}")
+        print(f"使用模型: {english_model}, 分辨率: {resolution}")
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
         
-        video_url = self.wait_for_completion(task_id)
+        video_url = self.wait_for_completion(task_id, model=english_model)
         print(f"视频生成完成: {video_url}")
         
         video_path = self.download_video(video_url)
@@ -565,10 +632,11 @@ class AliyunVideoEffects(AliyunVideoBase):
         }
         
         print(f"开始生成视频特效: {template}")
+        print(f"使用模板: {english_template}")
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
         
-        video_url = self.wait_for_completion(task_id)
+        video_url = self.wait_for_completion(task_id, model="wan2.2-kf2v-flash")
         print(f"视频生成完成: {video_url}")
         
         video_path = self.download_video(video_url)
