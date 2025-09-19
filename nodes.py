@@ -134,10 +134,22 @@ class AliyunVideoBase:
             raise Exception(f"API请求失败: {response.status_code} - {response.text}")
         
         result = response.json()
-        if result.get('code'):
-            raise Exception(f"API错误: {result.get('code')} - {result.get('message')}")
         
-        return result['output']['task_id']
+        # 根据官方文档，检查是否有错误
+        if result.get('code'):
+            error_code = result.get('code')
+            error_msg = result.get('message', '未知错误')
+            raise Exception(f"API错误: {error_code} - {error_msg}")
+        
+        # 检查是否有output字段和task_id
+        if 'output' not in result or 'task_id' not in result['output']:
+            raise Exception(f"API响应格式错误: {result}")
+        
+        task_id = result['output']['task_id']
+        task_status = result['output'].get('task_status', 'UNKNOWN')
+        print(f"任务创建成功，ID: {task_id}, 状态: {task_status}")
+        
+        return task_id
     
     def wait_for_completion(self, task_id: str, timeout: int = 300, model: str = None) -> str:
         """等待任务完成并返回视频URL"""
@@ -170,19 +182,30 @@ class AliyunVideoBase:
                 status = result['output']['task_status']
                 elapsed_time = int(time.time() - start_time)
                 
-                # 检查是否有video_url字段，即使状态还是RUNNING
-                video_url = result['output'].get('video_url')
+                # 根据官方文档，video_url在results字段中
+                results = result['output'].get('results', {})
+                video_url = results.get('video_url')
                 
                 if status == 'SUCCEEDED' or video_url:
                     if video_url and status != 'SUCCEEDED':
                         print(f"检测到video_url，任务实际已完成但状态未更新")
                     print_progress_bar(100, 100, prefix='任务完成', suffix=f'耗时:{elapsed_time}s')
                     print(f"任务成功完成，耗时: {elapsed_time}秒")
+                    
+                    # 显示使用量统计信息
+                    usage = result.get('usage', {})
+                    if usage:
+                        video_duration = usage.get('video_duration', 0)
+                        video_ratio = usage.get('video_ratio', 'unknown')
+                        print(f"生成视频时长: {video_duration}秒, 服务模式: {video_ratio}")
+                    
                     return video_url
                 elif status == 'FAILED':
-                    error_msg = result['output'].get('message', '未知错误')
-                    print(f"任务失败: {error_msg}")
-                    raise Exception(f"视频生成失败: {error_msg}")
+                    # 根据官方文档，错误信息可能在output或根级别
+                    error_msg = result.get('message') or result['output'].get('message', '未知错误')
+                    error_code = result.get('code', '未知错误码')
+                    print(f"任务失败: {error_code} - {error_msg}")
+                    raise Exception(f"视频生成失败: {error_code} - {error_msg}")
                 elif status in ['PENDING', 'RUNNING']:
                     remaining_time = timeout - elapsed_time
                     progress_percent = min(95, (elapsed_time / timeout) * 100)  # 最多显示95%，避免过早完成
@@ -710,21 +733,26 @@ class AliyunAnimateMove(AliyunVideoBase):
         return {
             "required": {
                 "api_key": ("STRING", {
-                    "forceInput": True
+                    "forceInput": True,
+                    "placeholder": "请输入阿里云API Key"
                 }),
-                "image": ("IMAGE",),  # 支持IMAGE类型
+                "image": ("IMAGE", {
+                    "tooltip": "输入图像，格式：JPG、JPEG、PNG、BMP、WEBP，尺寸：200-4096像素，宽高比：1:3至3:1，大小：不超过5MB"
+                }),
                 "video_url": ("STRING", {
                     "multiline": False,
                     "default": "https://example.com/reference_video.mp4",
-                    "placeholder": "请输入参考视频的URL地址"
+                    "placeholder": "请输入参考视频的URL地址（MP4/AVI/MOV格式，2-30秒，不超过200MB）"
                 }),
                 "mode": (["wan-std", "wan-pro"], {
-                    "default": "wan-std"
+                    "default": "wan-std",
+                    "tooltip": "wan-std: 标准模式，性价比高，生成速度快\nwan-pro: 专业模式，效果更佳，动画流畅度高"
                 }),
                 "check_image": ("BOOLEAN", {
                     "default": True,
                     "label_on": "开启图像检测",
-                    "label_off": "关闭图像检测"
+                    "label_off": "关闭图像检测",
+                    "tooltip": "是否对传入的图片进行检测"
                 }),
             }
         }
@@ -757,11 +785,30 @@ class AliyunAnimateMove(AliyunVideoBase):
         if not video_url.startswith(('http://', 'https://')):
             raise ValueError("视频URL必须以http://或https://开头")
         
-        # 构建payload
+        # 验证视频URL不能包含中文字符
+        try:
+            video_url.encode('ascii')
+        except UnicodeEncodeError:
+            raise ValueError("视频URL不能包含中文字符，请使用英文URL")
+        
+        # 验证图像尺寸（ComfyUI的IMAGE类型已经处理了大部分验证）
+        if len(image.shape) != 4 or image.shape[0] != 1:
+            raise ValueError("图像输入格式错误，请确保输入的是有效的图像")
+        
+        # 获取图像尺寸进行验证
+        _, height, width, _ = image.shape
+        if width < 200 or width > 4096 or height < 200 or height > 4096:
+            raise ValueError(f"图像尺寸不符合要求，当前尺寸：{width}x{height}，要求：200-4096像素")
+        
+        aspect_ratio = max(width/height, height/width)
+        if aspect_ratio > 3:
+            raise ValueError(f"图像宽高比不符合要求，当前比例：{width}:{height}，要求：1:3至3:1")
+        
+        # 构建payload - 根据官方文档格式
         payload = {
             "model": "wan2.2-animate-move",
             "input": {
-                "image": image_base64,
+                "image_url": image_base64,  # 官方文档要求使用image_url字段
                 "video_url": video_url
             },
             "parameters": {
@@ -774,6 +821,16 @@ class AliyunAnimateMove(AliyunVideoBase):
         print(f"使用模式: {mode} ({'标准' if mode == 'wan-std' else '专业'})")
         print(f"图像检测: {'开启' if check_image else '关闭'}")
         print(f"参考视频URL: {video_url}")
+        print(f"图像尺寸: {width}x{height}")
+        print(f"图像宽高比: {width}:{height} ({aspect_ratio:.2f})")
+        
+        # 显示计费信息
+        mode_info = {
+            "wan-std": {"name": "标准模式", "price": "0.4元/秒", "description": "生成速度快，性价比高"},
+            "wan-pro": {"name": "专业模式", "price": "0.6元/秒", "description": "动画流畅度高，效果更佳"}
+        }
+        info = mode_info.get(mode, mode_info["wan-std"])
+        print(f"计费模式: {info['name']} ({info['price']}) - {info['description']}")
         
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
