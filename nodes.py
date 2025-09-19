@@ -712,7 +712,7 @@ class AliyunAnimateMove(AliyunVideoBase):
                 "api_key": ("STRING", {
                     "forceInput": True
                 }),
-                "image": ("*",),  # 支持IMAGE和VIDEO类型
+                "image": ("IMAGE",),  # 支持IMAGE类型
                 "video_url": ("STRING", {
                     "multiline": False,
                     "default": "https://example.com/reference_video.mp4",
@@ -761,7 +761,7 @@ class AliyunAnimateMove(AliyunVideoBase):
         payload = {
             "model": "wan2.2-animate-move",
             "input": {
-                "image_url": image_base64,
+                "image": image_base64,
                 "video_url": video_url
             },
             "parameters": {
