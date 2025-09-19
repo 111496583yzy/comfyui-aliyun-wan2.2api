@@ -95,6 +95,34 @@ class AliyunVideoBase:
         
         return f"data:image/png;base64,{image_base64}"
     
+    def video_to_base64(self, video_tensor: torch.Tensor) -> str:
+        """将视频张量转换为base64编码（取第一帧作为图片）"""
+        # 视频张量格式通常是 (T, C, H, W) 或 (C, T, H, W)
+        if len(video_tensor.shape) == 4:
+            # 取第一帧
+            first_frame = video_tensor[0] if video_tensor.shape[0] != 3 else video_tensor
+        elif len(video_tensor.shape) == 5:
+            # (B, T, C, H, W) 格式，取第一帧
+            first_frame = video_tensor[0, 0]
+        else:
+            raise ValueError(f"不支持的视频张量格式: {video_tensor.shape}")
+        
+        # 确保张量格式为 (C, H, W)
+        if len(first_frame.shape) == 3 and first_frame.shape[0] == 3:  # RGB格式
+            first_frame = first_frame.permute(1, 2, 0)  # 转换为 (H, W, C)
+        
+        # 转换为PIL图像
+        image_np = (first_frame.cpu().numpy() * 255).astype(np.uint8)
+        image_pil = Image.fromarray(image_np)
+        
+        # 转换为base64
+        import io
+        buffer = io.BytesIO()
+        image_pil.save(buffer, format='PNG')
+        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        return f"data:image/png;base64,{image_base64}"
+    
     def create_task(self, payload: Dict[str, Any]) -> str:
         """创建视频生成任务"""
         if not self.headers:
@@ -684,7 +712,7 @@ class AliyunAnimateMove(AliyunVideoBase):
                 "api_key": ("STRING", {
                     "forceInput": True
                 }),
-                "image": ("IMAGE",),
+                "image": ("*",),  # 支持IMAGE和VIDEO类型
                 "video_url": ("STRING", {
                     "multiline": False,
                     "default": "https://example.com/reference_video.mp4",
@@ -712,8 +740,18 @@ class AliyunAnimateMove(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64
-        image_base64 = self.image_to_base64(image)
+        # 智能处理输入：判断是图片还是视频
+        try:
+            # 尝试作为图片处理
+            image_base64 = self.image_to_base64(image)
+            print("检测到图片输入，使用图片生成动作")
+        except Exception as e:
+            # 如果图片处理失败，尝试作为视频处理（取第一帧）
+            try:
+                image_base64 = self.video_to_base64(image)
+                print("检测到视频输入，提取第一帧作为图片生成动作")
+            except Exception as e2:
+                raise Exception(f"输入格式不支持，既不是有效的图片也不是有效的视频: {str(e2)}")
         
         # 验证视频URL格式
         if not video_url.startswith(('http://', 'https://')):
