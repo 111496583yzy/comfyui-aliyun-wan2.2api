@@ -9,6 +9,7 @@ import base64
 import requests
 import time
 import random
+import tempfile
 from typing import Dict, Any, Optional, Tuple
 import folder_paths
 import numpy as np
@@ -24,6 +25,23 @@ def print_progress_bar(current: int, total: int, prefix: str = '', suffix: str =
     print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', flush=True)
     if current == total:
         print()
+
+def verify_url_accessibility(url: str, timeout: int = 10) -> bool:
+    """
+    验证URL是否可以访问
+    
+    Args:
+        url: 要验证的URL
+        timeout: 超时时间（秒）
+        
+    Returns:
+        True如果URL可访问，False否则
+    """
+    try:
+        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        return response.status_code == 200
+    except:
+        return False
 
 def upload_file_to_server(file_path: str, upload_url: str = "https://ai.kefan.cn/api/upload/local") -> str:
     """
@@ -164,7 +182,7 @@ class AliyunVideoBase:
             "X-DashScope-Async": "enable"
         }
     
-    def image_to_base64(self, image_tensor: torch.Tensor) -> str:
+    def image_to_base64(self, image_tensor: torch.Tensor, use_data_url: bool = True) -> str:
         """将图像张量转换为base64编码"""
         # 转换张量格式
         if len(image_tensor.shape) == 4:
@@ -178,15 +196,18 @@ class AliyunVideoBase:
         image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
         image_pil = Image.fromarray(image_np)
         
-        # 转换为base64
+        # 转换为base64 - 使用JPEG格式以获得更好的兼容性
         import io
         buffer = io.BytesIO()
-        image_pil.save(buffer, format='PNG')
+        image_pil.save(buffer, format='JPEG', quality=95)
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
-        return f"data:image/png;base64,{image_base64}"
+        if use_data_url:
+            return f"data:image/jpeg;base64,{image_base64}"
+        else:
+            return image_base64
     
-    def video_to_base64(self, video_tensor: torch.Tensor) -> str:
+    def video_to_base64(self, video_tensor: torch.Tensor, use_data_url: bool = True) -> str:
         """将视频张量转换为base64编码（取第一帧作为图片）"""
         # 视频张量格式通常是 (T, C, H, W) 或 (C, T, H, W)
         if len(video_tensor.shape) == 4:
@@ -206,13 +227,16 @@ class AliyunVideoBase:
         image_np = (first_frame.cpu().numpy() * 255).astype(np.uint8)
         image_pil = Image.fromarray(image_np)
         
-        # 转换为base64
+        # 转换为base64 - 使用JPEG格式以获得更好的兼容性
         import io
         buffer = io.BytesIO()
-        image_pil.save(buffer, format='PNG')
+        image_pil.save(buffer, format='JPEG', quality=95)
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
-        return f"data:image/png;base64,{image_base64}"
+        if use_data_url:
+            return f"data:image/jpeg;base64,{image_base64}"
+        else:
+            return image_base64
     
     def create_task(self, payload: Dict[str, Any]) -> str:
         """创建视频生成任务"""
@@ -225,22 +249,10 @@ class AliyunVideoBase:
             raise Exception(f"API请求失败: {response.status_code} - {response.text}")
         
         result = response.json()
-        
-        # 根据官方文档，检查是否有错误
         if result.get('code'):
-            error_code = result.get('code')
-            error_msg = result.get('message', '未知错误')
-            raise Exception(f"API错误: {error_code} - {error_msg}")
+            raise Exception(f"API错误: {result.get('code')} - {result.get('message')}")
         
-        # 检查是否有output字段和task_id
-        if 'output' not in result or 'task_id' not in result['output']:
-            raise Exception(f"API响应格式错误: {result}")
-        
-        task_id = result['output']['task_id']
-        task_status = result['output'].get('task_status', 'UNKNOWN')
-        print(f"任务创建成功，ID: {task_id}, 状态: {task_status}")
-        
-        return task_id
+        return result['output']['task_id']
     
     def wait_for_completion(self, task_id: str, timeout: int = 300, model: str = None) -> str:
         """等待任务完成并返回视频URL"""
@@ -273,30 +285,19 @@ class AliyunVideoBase:
                 status = result['output']['task_status']
                 elapsed_time = int(time.time() - start_time)
                 
-                # 根据官方文档，video_url在results字段中
-                results = result['output'].get('results', {})
-                video_url = results.get('video_url')
+                # 检查是否有video_url字段，即使状态还是RUNNING
+                video_url = result['output'].get('video_url')
                 
                 if status == 'SUCCEEDED' or video_url:
                     if video_url and status != 'SUCCEEDED':
                         print(f"检测到video_url，任务实际已完成但状态未更新")
                     print_progress_bar(100, 100, prefix='任务完成', suffix=f'耗时:{elapsed_time}s')
                     print(f"任务成功完成，耗时: {elapsed_time}秒")
-                    
-                    # 显示使用量统计信息
-                    usage = result.get('usage', {})
-                    if usage:
-                        video_duration = usage.get('video_duration', 0)
-                        video_ratio = usage.get('video_ratio', 'unknown')
-                        print(f"生成视频时长: {video_duration}秒, 服务模式: {video_ratio}")
-                    
                     return video_url
                 elif status == 'FAILED':
-                    # 根据官方文档，错误信息可能在output或根级别
-                    error_msg = result.get('message') or result['output'].get('message', '未知错误')
-                    error_code = result.get('code', '未知错误码')
-                    print(f"任务失败: {error_code} - {error_msg}")
-                    raise Exception(f"视频生成失败: {error_code} - {error_msg}")
+                    error_msg = result['output'].get('message', '未知错误')
+                    print(f"任务失败: {error_msg}")
+                    raise Exception(f"视频生成失败: {error_msg}")
                 elif status in ['PENDING', 'RUNNING']:
                     remaining_time = timeout - elapsed_time
                     progress_percent = min(95, (elapsed_time / timeout) * 100)  # 最多显示95%，避免过早完成
@@ -514,8 +515,8 @@ class AliyunImageToVideo(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64
-        image_base64 = self.image_to_base64(image)
+        # 转换图像为base64 - 使用纯base64格式（不带data URL前缀）
+        image_base64 = self.image_to_base64(image, use_data_url=False)
         
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
@@ -619,9 +620,9 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64
-        first_frame_base64 = self.image_to_base64(first_frame)
-        last_frame_base64 = self.image_to_base64(last_frame)
+        # 转换图像为base64 - 使用纯base64格式（不带data URL前缀）
+        first_frame_base64 = self.image_to_base64(first_frame, use_data_url=False)
+        last_frame_base64 = self.image_to_base64(last_frame, use_data_url=False)
         
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
@@ -749,8 +750,8 @@ class AliyunVideoEffects(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64
-        image_base64 = self.image_to_base64(image)
+        # 转换图像为base64 - 使用纯base64格式（不带data URL前缀）
+        image_base64 = self.image_to_base64(image, use_data_url=False)
         
         # 将中文模板名称转换为英文
         english_template = self.TEMPLATE_MAPPING.get(template, template)
@@ -867,13 +868,13 @@ class AliyunAnimateMove(AliyunVideoBase):
         
         # 智能处理输入：判断是图片还是视频
         try:
-            # 尝试作为图片处理
-            image_base64 = self.image_to_base64(image)
+            # 尝试作为图片处理 - 使用纯base64格式（不带data URL前缀）
+            image_base64 = self.image_to_base64(image, use_data_url=False)
             print("检测到图片输入，使用图片生成动作")
         except Exception as e:
             # 如果图片处理失败，尝试作为视频处理（取第一帧）
             try:
-                image_base64 = self.video_to_base64(image)
+                image_base64 = self.video_to_base64(image, use_data_url=False)
                 print("检测到视频输入，提取第一帧作为图片生成动作")
             except Exception as e2:
                 raise Exception(f"输入格式不支持，既不是有效的图片也不是有效的视频: {str(e2)}")
@@ -908,19 +909,36 @@ class AliyunAnimateMove(AliyunVideoBase):
             temp_image_path = save_image_to_temp_file(image, "png")
             try:
                 image_online_url = upload_file_to_server(temp_image_path)
+                
+                # 验证URL是否可访问
+                print("验证上传的URL是否可访问...")
+                if verify_url_accessibility(image_online_url):
+                    print(f"URL验证成功: {image_online_url}")
+                else:
+                    print(f"警告: URL无法访问，将使用base64编码: {image_online_url}")
+                    image_online_url = image_base64
+                    
             finally:
                 # 清理临时文件
                 if os.path.exists(temp_image_path):
                     os.unlink(temp_image_path)
         else:
-            # 如果用户提供了图像URL，直接使用
-            # 这里需要用户手动提供图像URL，但我们仍然需要base64编码
+            # 如果用户没有启用自动上传，使用base64编码
+            print("使用base64编码图像数据")
             image_online_url = image_base64
         
         # 处理视频URL
         if auto_upload and os.path.exists(video_url):
             print("检测到本地视频文件，正在上传...")
             video_online_url = upload_file_to_server(video_url)
+            
+            # 验证视频URL是否可访问
+            print("验证上传的视频URL是否可访问...")
+            if verify_url_accessibility(video_online_url):
+                print(f"视频URL验证成功: {video_online_url}")
+            else:
+                print(f"警告: 视频URL无法访问: {video_online_url}")
+                # 对于视频，如果URL不可访问，我们仍然使用它，因为可能只是验证失败但实际可用
         else:
             video_online_url = video_url
         
