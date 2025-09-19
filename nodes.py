@@ -756,10 +756,8 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
                     "multiline": False,
                     "placeholder": "输入视频文件路径或连接LoadVideo节点"
                 }),
-                "mode": ("STRING", {
-                    "default": "wan-std",
-                    "multiline": False,
-                    "placeholder": "输入模式: wan-std 或 wan-pro"
+                "mode": (["wan-std", "wan-pro"], {
+                    "default": "wan-std"
                 }),
                 "check_image": ("BOOLEAN", {
                     "default": True
@@ -829,17 +827,10 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
             return f"file://{video_path}"
     
     def generate_animate_move(self, api_key: str, image: torch.Tensor, video, 
-                            mode: str, check_image: bool, seed: int) -> Tuple[str, str]:
+                             mode: str, check_image: bool, seed: int) -> Tuple[str, str]:
         """生成图生动作视频"""
         # 设置API密钥
         self.set_api_key(api_key)
-        
-        # 处理模式参数 - 直接使用输入的模式值
-        actual_mode = mode.strip().lower()
-        
-        # 验证模式参数
-        if actual_mode not in ["wan-std", "wan-pro"]:
-            raise Exception(f"不支持的模式: {mode}，请使用 'wan-std' 或 'wan-pro'")
         
         # 处理视频输入 - 支持VIDEO类型和STRING类型
         if isinstance(video, str):
@@ -871,7 +862,7 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
         # 上传图像到服务器
         print("正在上传图像...")
         image_url = self.upload_image_to_server(image)
-        print(f"图像处理完成")
+        print(f"图像上传完成: {image_url[:100]}...")
         
         # 上传视频到服务器
         print("正在上传视频...")
@@ -891,7 +882,7 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
             },
             "parameters": {
                 "check_image": check_image,
-                "mode": actual_mode,
+                "mode": mode,
                 "seed": seed
             }
         }
@@ -899,7 +890,7 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
         print(f"开始生成图生动作视频")
         print(f"图像URL: {image_url[:100]}...")
         print(f"视频URL: {video_url}")
-        print(f"服务模式: {actual_mode} - {self.MODE_DESCRIPTIONS[actual_mode]}")
+        print(f"服务模式: {mode} - {self.MODE_DESCRIPTIONS[mode]}")
         print(f"图像检测: {'开启' if check_image else '关闭'}")
         print(f"种子: {seed}")
         
