@@ -15,6 +15,8 @@ import numpy as np
 from PIL import Image
 import sys
 import torch
+import mimetypes
+import uuid
 
 def print_progress_bar(current: int, total: int, prefix: str = '', suffix: str = '', length: int = 50):
     """打印进度条"""
@@ -85,23 +87,15 @@ class AliyunVideoBase:
         
         # 转换为PIL图像
         image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
-        
-        # 确保图像数据在有效范围内
-        image_np = np.clip(image_np, 0, 255)
-        
         image_pil = Image.fromarray(image_np)
         
         # 转换为base64
         import io
         buffer = io.BytesIO()
-        # 使用JPEG格式，因为阿里云API更兼容JPEG
-        image_pil.save(buffer, format='JPEG', quality=95, optimize=True)
+        image_pil.save(buffer, format='PNG')
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
-        # 添加调试信息
-        print(f"图像转换完成，格式: JPEG, 大小: {len(image_base64)} 字符")
-        
-        return f"data:image/jpeg;base64,{image_base64}"
+        return f"data:image/png;base64,{image_base64}"
     
     def create_task(self, payload: Dict[str, Any]) -> str:
         """创建视频生成任务"""
@@ -653,74 +647,160 @@ class AliyunVideoEffects(AliyunVideoBase):
         return (video_path,)
 
 
-class AliyunAnimateMove(AliyunVideoBase):
-    """阿里云图生动作节点"""
+class FileUploadNode:
+    """文件上传节点 - 支持上传到ComfyUI文件服务器"""
     
-    def __init__(self):
-        super().__init__()
-        # 图生动作使用相同的API端点
-        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/video-synthesis"
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "file_path": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "placeholder": "请输入文件路径或拖拽文件到这里"
+                }),
+            },
+            "optional": {
+                "upload_to_server": ("BOOLEAN", {"default": True}),
+                "server_url": ("STRING", {
+                    "default": "https://ai.comfly.chat",
+                    "multiline": False,
+                    "placeholder": "上传服务器URL"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("file_url", "file_info")
+    FUNCTION = "upload_file"
+    CATEGORY = "Aliyun Video"
+    
+    def upload_file(self, file_path: str, upload_to_server: bool = True, server_url: str = "https://ai.comfly.chat") -> Tuple[str, str]:
+        """上传文件并返回URL"""
+        if not file_path or not os.path.exists(file_path):
+            raise Exception(f"文件不存在: {file_path}")
+        
+        # 获取文件信息
+        file_size = os.path.getsize(file_path)
+        file_name = os.path.basename(file_path)
+        file_ext = os.path.splitext(file_name)[1].lower()
+        
+        # 检查文件类型
+        allowed_image_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
+        allowed_video_exts = ['.mp4', '.avi', '.mov']
+        
+        if file_ext not in allowed_image_exts + allowed_video_exts:
+            raise Exception(f"不支持的文件类型: {file_ext}")
+        
+        if upload_to_server and server_url:
+            try:
+                # 上传到指定服务器
+                upload_url = f"{server_url}/v1/files"
+                
+                with open(file_path, 'rb') as file:
+                    files = {
+                        'file': (file_name, file, mimetypes.guess_type(file_path)[0] or 'application/octet-stream')
+                    }
+                    
+                    # 发送上传请求
+                    response = requests.post(upload_url, files=files, timeout=300)
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        file_url = result.get('url', result.get('id'))
+                        if not file_url:
+                            raise Exception("服务器未返回文件URL")
+                        
+                        file_info = f"上传成功: {file_name}, 大小: {file_size} bytes, 类型: {file_ext}"
+                        print(f"文件上传成功: {file_url}")
+                        return (file_url, file_info)
+                    else:
+                        raise Exception(f"上传失败: {response.status_code} - {response.text}")
+                        
+            except Exception as e:
+                print(f"上传到服务器失败: {e}")
+                print("使用本地文件路径")
+                # 上传失败，使用本地路径
+                file_url = f"file://{file_path}"
+                file_info = f"本地文件: {file_name}, 大小: {file_size} bytes (上传失败: {e})"
+        else:
+            # 返回本地文件路径
+            file_url = file_path
+            file_info = f"本地文件: {file_name}, 大小: {file_size} bytes"
+        
+        print(f"文件处理完成: {file_url}")
+        return (file_url, file_info)
+
+
+class AliyunImageToAnimateMove(AliyunVideoBase):
+    """阿里云万相2.2图生动作节点"""
+    
+    # 服务模式说明
+    MODE_DESCRIPTIONS = {
+        "wan-std": "标准模式 - 生成速度快，满足基础动画演示等轻需求，性价比高 (0.4元/秒)",
+        "wan-pro": "专业模式 - 动画流畅度高，动作表情过渡自然，效果更接近真实拍摄 (0.6元/秒)"
+    }
     
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "api_key": ("STRING", {
-                    "forceInput": True
-                }),
-                "image": ("IMAGE",),
-                "video_url": ("STRING", {
-                    "multiline": False,
                     "default": "",
-                    "placeholder": "请输入参考视频的URL链接"
+                    "multiline": False,
+                    "placeholder": "请输入您的DASHSCOPE_API_KEY"
+                }),
+                "image_url": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "placeholder": "输入图像URL或使用文件上传节点"
+                }),
+                "video_url": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "placeholder": "输入参考视频URL或使用文件上传节点"
                 }),
                 "mode": (["wan-std", "wan-pro"], {
-                    "default": "wan-std",
-                    "tooltip": "wan-std: 标准模式(0.4元/秒) | wan-pro: 专业模式(0.6元/秒)"
+                    "default": "wan-std"
                 }),
-            },
-            "optional": {
                 "check_image": ("BOOLEAN", {
-                    "default": True,
-                    "label_on": "开启图像检测",
-                    "label_off": "跳过图像检测"
+                    "default": True
                 }),
                 "seed": ("INT", {
                     "default": -1,
                     "min": -1,
                     "max": 2147483647,
-                    "step": 1,
-                    "tooltip": "随机种子，-1为随机生成"
+                    "step": 1
                 }),
             }
         }
     
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_path",)
-    FUNCTION = "generate_video"
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("video_path", "usage_info")
+    FUNCTION = "generate_animate_move"
     CATEGORY = "Aliyun Video"
     
-    def generate_video(self, api_key: str, image: torch.Tensor, video_url: str, 
-                      mode: str, check_image: bool = True, seed: int = -1) -> Tuple[str]:
+    def generate_animate_move(self, api_key: str, image_url: str, video_url: str, 
+                            mode: str, check_image: bool, seed: int) -> Tuple[str, str]:
         """生成图生动作视频"""
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 验证输入
+        # 验证输入URL
+        if not image_url.strip():
+            raise Exception("请输入图像URL")
         if not video_url.strip():
-            raise ValueError("请输入参考视频的URL链接")
-        
-        # 转换图像为base64
-        image_base64 = self.image_to_base64(image)
+            raise Exception("请输入参考视频URL")
         
         # 处理随机种子
         if seed == -1:
             seed = random.randint(0, 2147483647)
         
+        # 构建请求载荷
         payload = {
             "model": "wan2.2-animate-move",
             "input": {
-                "image_url": image_base64,
+                "image_url": image_url.strip(),
                 "video_url": video_url.strip()
             },
             "parameters": {
@@ -730,19 +810,110 @@ class AliyunAnimateMove(AliyunVideoBase):
             }
         }
         
-        mode_text = "专业模式" if mode == "wan-pro" else "标准模式"
-        print(f"开始生成图生动作视频，模式: {mode_text}")
-        print(f"参考视频: {video_url}")
+        print(f"开始生成图生动作视频")
+        print(f"图像URL: {image_url}")
+        print(f"视频URL: {video_url}")
+        print(f"服务模式: {mode} - {self.MODE_DESCRIPTIONS[mode]}")
+        print(f"图像检测: {'开启' if check_image else '关闭'}")
+        print(f"种子: {seed}")
+        
+        # 创建任务
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
         
-        video_url_result = self.wait_for_completion(task_id, model="wan2.2-animate-move")
-        print(f"视频生成完成: {video_url_result}")
+        # 等待任务完成
+        result = self.wait_for_completion_with_usage(task_id, model="wan2.2-animate-move")
         
-        video_path = self.download_video(video_url_result)
+        if isinstance(result, dict):
+            video_url = result.get('video_url')
+            usage_info = result.get('usage_info', '')
+        else:
+            # 兼容旧版本返回格式
+            video_url = result
+            usage_info = "使用信息获取失败"
+        
+        print(f"视频生成完成: {video_url}")
+        print(f"使用信息: {usage_info}")
+        
+        # 下载视频
+        video_path = self.download_video(video_url)
         print(f"视频已保存到: {video_path}")
         
-        return (video_path,)
+        return (video_path, usage_info)
+    
+    def wait_for_completion_with_usage(self, task_id: str, timeout: int = 300, model: str = None) -> dict:
+        """等待任务完成并返回详细结果信息"""
+        # 根据模型类型设置不同的超时时间
+        if model and "wan2.2-animate-move" in model:
+            timeout = 300  # 万相2.2图生动作模型，设置为5分钟
+            print(f"检测到万相2.2图生动作模型，超时时间设置为{timeout}秒")
+        
+        start_time = time.time()
+        poll_interval = 15  # 根据官方文档建议，轮询间隔设置为15秒
+        
+        print(f"开始等待任务完成，超时时间: {timeout}秒，轮询间隔: {poll_interval}秒")
+        
+        while time.time() - start_time < timeout:
+            # 查询任务状态 - 使用GET方法查询任务
+            query_url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
+            
+            query_headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.get(query_url, headers=query_headers)
+            
+            if response.status_code == 200:
+                result = response.json()
+                output = result.get('output', {})
+                status = output.get('task_status')
+                elapsed_time = int(time.time() - start_time)
+                
+                # 检查是否有video_url字段，即使状态还是RUNNING
+                video_url = output.get('results', {}).get('video_url')
+                
+                if status == 'SUCCEEDED' or video_url:
+                    if video_url and status != 'SUCCEEDED':
+                        print(f"检测到video_url，任务实际已完成但状态未更新")
+                    print_progress_bar(100, 100, prefix='任务完成', suffix=f'耗时:{elapsed_time}s')
+                    print(f"任务成功完成，耗时: {elapsed_time}秒")
+                    
+                    # 提取使用信息
+                    usage = result.get('usage', {})
+                    usage_info = f"视频时长: {usage.get('video_duration', 'N/A')}秒, 服务模式: {usage.get('video_ratio', 'N/A')}"
+                    
+                    return {
+                        'video_url': video_url,
+                        'usage_info': usage_info,
+                        'task_id': task_id,
+                        'status': status,
+                        'elapsed_time': elapsed_time
+                    }
+                elif status == 'FAILED':
+                    error_msg = output.get('message', '未知错误')
+                    raise Exception(f"任务失败: {error_msg}")
+                elif status == 'CANCELED':
+                    raise Exception("任务已取消")
+                elif status == 'UNKNOWN':
+                    raise Exception("任务不存在或状态未知")
+                else:
+                    # 显示进度
+                    progress = min(int((elapsed_time / timeout) * 100), 95)
+                    print_progress_bar(progress, 100, prefix=f'任务状态: {status}', suffix=f'耗时:{elapsed_time}s')
+                    
+                    if status == 'PENDING':
+                        print(f"任务排队中... 已等待 {elapsed_time} 秒")
+                    elif status == 'RUNNING':
+                        print(f"任务处理中... 已等待 {elapsed_time} 秒")
+                        
+            else:
+                print(f"查询任务状态失败: {response.status_code} - {response.text}")
+            
+            time.sleep(poll_interval)
+        
+        # 超时
+        raise Exception(f"任务超时，已等待 {timeout} 秒")
 
 
 # 节点映射
@@ -752,7 +923,8 @@ NODE_CLASS_MAPPINGS = {
     "AliyunImageToVideo": AliyunImageToVideo,
     "AliyunFirstLastFrameToVideo": AliyunFirstLastFrameToVideo,
     "AliyunVideoEffects": AliyunVideoEffects,
-    "AliyunAnimateMove": AliyunAnimateMove,
+    "FileUploadNode": FileUploadNode,
+    "AliyunImageToAnimateMove": AliyunImageToAnimateMove,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -761,5 +933,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AliyunImageToVideo": "阿里云图生视频", 
     "AliyunFirstLastFrameToVideo": "阿里云首尾帧生视频",
     "AliyunVideoEffects": "阿里云视频特效",
-    "AliyunAnimateMove": "阿里云图生动作",
+    "FileUploadNode": "文件上传节点",
+    "AliyunImageToAnimateMove": "阿里云万相2.2图生动作",
 }
