@@ -756,11 +756,10 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
                     "multiline": False,
                     "placeholder": "输入视频文件路径或连接LoadVideo节点"
                 }),
-                "mode": ([
-                    "wan-std - 标准模式 (0.4元/秒)",
-                    "wan-pro - 专业模式 (0.6元/秒)"
-                ], {
-                    "default": "wan-std - 标准模式 (0.4元/秒)"
+                "mode": ("STRING", {
+                    "default": "wan-std",
+                    "multiline": False,
+                    "placeholder": "输入模式: wan-std 或 wan-pro"
                 }),
                 "check_image": ("BOOLEAN", {
                     "default": True
@@ -835,13 +834,12 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 处理模式参数 - 从下拉框描述中提取实际模式值
-        if "wan-std" in mode:
-            actual_mode = "wan-std"
-        elif "wan-pro" in mode:
-            actual_mode = "wan-pro"
-        else:
-            actual_mode = mode  # 兼容直接传入模式值的情况
+        # 处理模式参数 - 直接使用输入的模式值
+        actual_mode = mode.strip().lower()
+        
+        # 验证模式参数
+        if actual_mode not in ["wan-std", "wan-pro"]:
+            raise Exception(f"不支持的模式: {mode}，请使用 'wan-std' 或 'wan-pro'")
         
         # 处理视频输入 - 支持VIDEO类型和STRING类型
         if isinstance(video, str):
