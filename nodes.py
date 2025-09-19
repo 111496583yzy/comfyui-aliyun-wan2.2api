@@ -85,15 +85,23 @@ class AliyunVideoBase:
         
         # 转换为PIL图像
         image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
+        
+        # 确保图像数据在有效范围内
+        image_np = np.clip(image_np, 0, 255)
+        
         image_pil = Image.fromarray(image_np)
         
         # 转换为base64
         import io
         buffer = io.BytesIO()
-        image_pil.save(buffer, format='PNG')
+        # 使用JPEG格式，因为阿里云API更兼容JPEG
+        image_pil.save(buffer, format='JPEG', quality=95, optimize=True)
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
-        return f"data:image/png;base64,{image_base64}"
+        # 添加调试信息
+        print(f"图像转换完成，格式: JPEG, 大小: {len(image_base64)} 字符")
+        
+        return f"data:image/jpeg;base64,{image_base64}"
     
     def create_task(self, payload: Dict[str, Any]) -> str:
         """创建视频生成任务"""
