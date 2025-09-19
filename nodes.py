@@ -645,6 +645,110 @@ class AliyunVideoEffects(AliyunVideoBase):
         return (video_path,)
 
 
+class AliyunAnimateMove(AliyunVideoBase):
+    """阿里云图生动作节点"""
+    
+    def __init__(self):
+        super().__init__()
+        # 图生动作使用相同的API端点
+        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/video-synthesis"
+    
+    def image_to_base64_from_url(self, image_url: str) -> str:
+        """从URL获取图像并转换为base64编码"""
+        try:
+            response = requests.get(image_url)
+            response.raise_for_status()
+            
+            # 转换为base64
+            image_base64 = base64.b64encode(response.content).decode('utf-8')
+            return f"data:image/jpeg;base64,{image_base64}"
+        except Exception as e:
+            raise Exception(f"无法从URL获取图像: {str(e)}")
+    
+    def video_to_base64_from_url(self, video_url: str) -> str:
+        """从URL获取视频并转换为base64编码"""
+        try:
+            response = requests.get(video_url)
+            response.raise_for_status()
+            
+            # 转换为base64
+            video_base64 = base64.b64encode(response.content).decode('utf-8')
+            return f"data:video/mp4;base64,{video_base64}"
+        except Exception as e:
+            raise Exception(f"无法从URL获取视频: {str(e)}")
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "api_key": ("STRING", {
+                    "forceInput": True
+                }),
+                "image": ("IMAGE",),
+                "video_url": ("STRING", {
+                    "multiline": False,
+                    "default": "https://example.com/reference_video.mp4",
+                    "placeholder": "请输入参考视频的URL地址"
+                }),
+                "mode": (["wan-std", "wan-pro"], {
+                    "default": "wan-std"
+                }),
+                "check_image": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "开启图像检测",
+                    "label_off": "关闭图像检测"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("video_path",)
+    FUNCTION = "generate_video"
+    CATEGORY = "Aliyun Video"
+    
+    def generate_video(self, api_key: str, image: torch.Tensor, video_url: str, 
+                      mode: str = "wan-std", check_image: bool = True) -> Tuple[str]:
+        """生成图生动作视频"""
+        # 设置API密钥
+        self.set_api_key(api_key)
+        
+        # 转换图像为base64
+        image_base64 = self.image_to_base64(image)
+        
+        # 验证视频URL格式
+        if not video_url.startswith(('http://', 'https://')):
+            raise ValueError("视频URL必须以http://或https://开头")
+        
+        # 构建payload
+        payload = {
+            "model": "wan2.2-animate-move",
+            "input": {
+                "image_url": image_base64,
+                "video_url": video_url
+            },
+            "parameters": {
+                "check_image": check_image,
+                "mode": mode
+            }
+        }
+        
+        print(f"开始生成图生动作视频")
+        print(f"使用模式: {mode} ({'标准' if mode == 'wan-std' else '专业'})")
+        print(f"图像检测: {'开启' if check_image else '关闭'}")
+        print(f"参考视频URL: {video_url}")
+        
+        task_id = self.create_task(payload)
+        print(f"任务ID: {task_id}")
+        
+        video_url_result = self.wait_for_completion(task_id, model="wan2.2-animate-move")
+        print(f"视频生成完成: {video_url_result}")
+        
+        video_path = self.download_video(video_url_result)
+        print(f"视频已保存到: {video_path}")
+        
+        return (video_path,)
+
+
 # 节点映射
 NODE_CLASS_MAPPINGS = {
     "AliyunAPIKey": AliyunAPIKey,
@@ -652,6 +756,7 @@ NODE_CLASS_MAPPINGS = {
     "AliyunImageToVideo": AliyunImageToVideo,
     "AliyunFirstLastFrameToVideo": AliyunFirstLastFrameToVideo,
     "AliyunVideoEffects": AliyunVideoEffects,
+    "AliyunAnimateMove": AliyunAnimateMove,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -660,4 +765,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AliyunImageToVideo": "阿里云图生视频", 
     "AliyunFirstLastFrameToVideo": "阿里云首尾帧生视频",
     "AliyunVideoEffects": "阿里云视频特效",
+    "AliyunAnimateMove": "阿里云图生动作",
 }
