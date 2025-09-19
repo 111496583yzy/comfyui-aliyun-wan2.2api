@@ -9,7 +9,6 @@ import base64
 import requests
 import time
 import random
-import tempfile
 from typing import Dict, Any, Optional, Tuple
 import folder_paths
 import numpy as np
@@ -25,114 +24,6 @@ def print_progress_bar(current: int, total: int, prefix: str = '', suffix: str =
     print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='', flush=True)
     if current == total:
         print()
-
-def verify_url_accessibility(url: str, timeout: int = 10) -> bool:
-    """
-    验证URL是否可以访问
-    
-    Args:
-        url: 要验证的URL
-        timeout: 超时时间（秒）
-        
-    Returns:
-        True如果URL可访问，False否则
-    """
-    try:
-        response = requests.head(url, timeout=timeout, allow_redirects=True)
-        return response.status_code == 200
-    except:
-        return False
-
-def upload_file_to_server(file_path: str, upload_url: str = "https://ai.kefan.cn/api/upload/local") -> str:
-    """
-    上传文件到服务器并获取在线URL
-    
-    Args:
-        file_path: 本地文件路径
-        upload_url: 上传接口URL
-        
-    Returns:
-        在线文件URL
-        
-    Raises:
-        Exception: 上传失败时抛出异常
-    """
-    try:
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-        
-        # 检查文件大小（最大200MB）
-        file_size = os.path.getsize(file_path)
-        if file_size > 200 * 1024 * 1024:  # 200MB
-            raise ValueError(f"文件过大: {file_size / (1024*1024):.1f}MB，最大支持200MB")
-        
-        print(f"开始上传文件: {os.path.basename(file_path)} ({file_size / (1024*1024):.1f}MB)")
-        
-        with open(file_path, 'rb') as f:
-            files = {'file': (os.path.basename(file_path), f)}
-            response = requests.post(upload_url, files=files, timeout=300)  # 5分钟超时
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('success') and result.get('code') == 200:
-                online_url = result.get('data')
-                print(f"文件上传成功: {online_url}")
-                return online_url
-            else:
-                raise Exception(f"上传失败: {result.get('message', '未知错误')}")
-        else:
-            raise Exception(f"上传请求失败: HTTP {response.status_code}")
-            
-    except requests.exceptions.Timeout:
-        raise Exception("上传超时，请检查网络连接或文件大小")
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"网络请求失败: {str(e)}")
-    except Exception as e:
-        raise Exception(f"上传文件失败: {str(e)}")
-
-def save_image_to_temp_file(image_tensor: torch.Tensor, file_format: str = "png") -> str:
-    """
-    将图像张量保存为临时文件
-    
-    Args:
-        image_tensor: 图像张量 [1, H, W, C]
-        file_format: 文件格式 (png, jpg, jpeg)
-        
-    Returns:
-        临时文件路径
-    """
-    try:
-        # 转换为numpy数组
-        if len(image_tensor.shape) == 4:
-            image_array = image_tensor[0].cpu().numpy()
-        else:
-            image_array = image_tensor.cpu().numpy()
-        
-        # 确保值在0-255范围内
-        if image_array.max() <= 1.0:
-            image_array = (image_array * 255).astype(np.uint8)
-        else:
-            image_array = image_array.astype(np.uint8)
-        
-        # 转换为PIL图像
-        if image_array.shape[2] == 3:  # RGB
-            pil_image = Image.fromarray(image_array, 'RGB')
-        else:  # RGBA
-            pil_image = Image.fromarray(image_array, 'RGBA')
-        
-        # 创建临时文件
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_format}')
-        temp_path = temp_file.name
-        temp_file.close()
-        
-        # 保存图像
-        pil_image.save(temp_path, format=file_format.upper())
-        print(f"图像已保存到临时文件: {temp_path}")
-        
-        return temp_path
-        
-    except Exception as e:
-        raise Exception(f"保存图像失败: {str(e)}")
 
 class AliyunAPIKey:
     """阿里云API密钥配置节点"""
@@ -182,7 +73,7 @@ class AliyunVideoBase:
             "X-DashScope-Async": "enable"
         }
     
-    def image_to_base64(self, image_tensor: torch.Tensor, use_data_url: bool = True) -> str:
+    def image_to_base64(self, image_tensor: torch.Tensor) -> str:
         """将图像张量转换为base64编码"""
         # 转换张量格式
         if len(image_tensor.shape) == 4:
@@ -196,47 +87,13 @@ class AliyunVideoBase:
         image_np = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
         image_pil = Image.fromarray(image_np)
         
-        # 转换为base64 - 使用JPEG格式以获得更好的兼容性
+        # 转换为base64
         import io
         buffer = io.BytesIO()
-        image_pil.save(buffer, format='JPEG', quality=95)
+        image_pil.save(buffer, format='PNG')
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
-        if use_data_url:
-            return f"data:image/jpeg;base64,{image_base64}"
-        else:
-            return image_base64
-    
-    def video_to_base64(self, video_tensor: torch.Tensor, use_data_url: bool = True) -> str:
-        """将视频张量转换为base64编码（取第一帧作为图片）"""
-        # 视频张量格式通常是 (T, C, H, W) 或 (C, T, H, W)
-        if len(video_tensor.shape) == 4:
-            # 取第一帧
-            first_frame = video_tensor[0] if video_tensor.shape[0] != 3 else video_tensor
-        elif len(video_tensor.shape) == 5:
-            # (B, T, C, H, W) 格式，取第一帧
-            first_frame = video_tensor[0, 0]
-        else:
-            raise ValueError(f"不支持的视频张量格式: {video_tensor.shape}")
-        
-        # 确保张量格式为 (C, H, W)
-        if len(first_frame.shape) == 3 and first_frame.shape[0] == 3:  # RGB格式
-            first_frame = first_frame.permute(1, 2, 0)  # 转换为 (H, W, C)
-        
-        # 转换为PIL图像
-        image_np = (first_frame.cpu().numpy() * 255).astype(np.uint8)
-        image_pil = Image.fromarray(image_np)
-        
-        # 转换为base64 - 使用JPEG格式以获得更好的兼容性
-        import io
-        buffer = io.BytesIO()
-        image_pil.save(buffer, format='JPEG', quality=95)
-        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
-        if use_data_url:
-            return f"data:image/jpeg;base64,{image_base64}"
-        else:
-            return image_base64
+        return f"data:image/png;base64,{image_base64}"
     
     def create_task(self, payload: Dict[str, Any]) -> str:
         """创建视频生成任务"""
@@ -515,8 +372,8 @@ class AliyunImageToVideo(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64 - 使用纯base64格式（不带data URL前缀）
-        image_base64 = self.image_to_base64(image, use_data_url=False)
+        # 转换图像为base64
+        image_base64 = self.image_to_base64(image)
         
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
@@ -620,9 +477,9 @@ class AliyunFirstLastFrameToVideo(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64 - 使用纯base64格式（不带data URL前缀）
-        first_frame_base64 = self.image_to_base64(first_frame, use_data_url=False)
-        last_frame_base64 = self.image_to_base64(last_frame, use_data_url=False)
+        # 转换图像为base64
+        first_frame_base64 = self.image_to_base64(first_frame)
+        last_frame_base64 = self.image_to_base64(last_frame)
         
         # 将中文模型名称转换为英文
         english_model = self.MODEL_MAPPING.get(model, model)
@@ -750,8 +607,8 @@ class AliyunVideoEffects(AliyunVideoBase):
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 转换图像为base64 - 使用纯base64格式（不带data URL前缀）
-        image_base64 = self.image_to_base64(image, use_data_url=False)
+        # 转换图像为base64
+        image_base64 = self.image_to_base64(image)
         
         # 将中文模板名称转换为英文
         english_template = self.TEMPLATE_MAPPING.get(template, template)
@@ -796,61 +653,36 @@ class AliyunAnimateMove(AliyunVideoBase):
         # 图生动作使用相同的API端点
         self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/video-synthesis"
     
-    def image_to_base64_from_url(self, image_url: str) -> str:
-        """从URL获取图像并转换为base64编码"""
-        try:
-            response = requests.get(image_url)
-            response.raise_for_status()
-            
-            # 转换为base64
-            image_base64 = base64.b64encode(response.content).decode('utf-8')
-            return f"data:image/jpeg;base64,{image_base64}"
-        except Exception as e:
-            raise Exception(f"无法从URL获取图像: {str(e)}")
-    
-    def video_to_base64_from_url(self, video_url: str) -> str:
-        """从URL获取视频并转换为base64编码"""
-        try:
-            response = requests.get(video_url)
-            response.raise_for_status()
-            
-            # 转换为base64
-            video_base64 = base64.b64encode(response.content).decode('utf-8')
-            return f"data:video/mp4;base64,{video_base64}"
-        except Exception as e:
-            raise Exception(f"无法从URL获取视频: {str(e)}")
-    
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "api_key": ("STRING", {
-                    "forceInput": True,
-                    "placeholder": "请输入阿里云API Key"
+                    "forceInput": True
                 }),
-                "image": ("IMAGE", {
-                    "tooltip": "输入图像，格式：JPG、JPEG、PNG、BMP、WEBP，尺寸：200-4096像素，宽高比：1:3至3:1，大小：不超过5MB"
-                }),
+                "image": ("IMAGE",),
                 "video_url": ("STRING", {
                     "multiline": False,
-                    "default": "https://example.com/reference_video.mp4",
-                    "placeholder": "请输入参考视频的URL地址（MP4/AVI/MOV格式，2-30秒，不超过200MB）"
+                    "default": "",
+                    "placeholder": "请输入参考视频的URL链接"
                 }),
                 "mode": (["wan-std", "wan-pro"], {
                     "default": "wan-std",
-                    "tooltip": "wan-std: 标准模式，性价比高，生成速度快\nwan-pro: 专业模式，效果更佳，动画流畅度高"
+                    "tooltip": "wan-std: 标准模式(0.4元/秒) | wan-pro: 专业模式(0.6元/秒)"
                 }),
+            },
+            "optional": {
                 "check_image": ("BOOLEAN", {
                     "default": True,
                     "label_on": "开启图像检测",
-                    "label_off": "关闭图像检测",
-                    "tooltip": "是否对传入的图片进行检测"
+                    "label_off": "跳过图像检测"
                 }),
-                "auto_upload": ("BOOLEAN", {
-                    "default": True,
-                    "label_on": "自动上传文件",
-                    "label_off": "手动提供URL",
-                    "tooltip": "是否自动上传图像和视频文件到服务器获取在线URL"
+                "seed": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 2147483647,
+                    "step": 1,
+                    "tooltip": "随机种子，-1为随机生成"
                 }),
             }
         }
@@ -861,116 +693,38 @@ class AliyunAnimateMove(AliyunVideoBase):
     CATEGORY = "Aliyun Video"
     
     def generate_video(self, api_key: str, image: torch.Tensor, video_url: str, 
-                      mode: str = "wan-std", check_image: bool = True, auto_upload: bool = True) -> Tuple[str]:
+                      mode: str, check_image: bool = True, seed: int = -1) -> Tuple[str]:
         """生成图生动作视频"""
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 智能处理输入：判断是图片还是视频
-        try:
-            # 尝试作为图片处理 - 使用纯base64格式（不带data URL前缀）
-            image_base64 = self.image_to_base64(image, use_data_url=False)
-            print("检测到图片输入，使用图片生成动作")
-        except Exception as e:
-            # 如果图片处理失败，尝试作为视频处理（取第一帧）
-            try:
-                image_base64 = self.video_to_base64(image, use_data_url=False)
-                print("检测到视频输入，提取第一帧作为图片生成动作")
-            except Exception as e2:
-                raise Exception(f"输入格式不支持，既不是有效的图片也不是有效的视频: {str(e2)}")
+        # 验证输入
+        if not video_url.strip():
+            raise ValueError("请输入参考视频的URL链接")
         
-        # 验证视频URL格式
-        if not video_url.startswith(('http://', 'https://')):
-            raise ValueError("视频URL必须以http://或https://开头")
+        # 转换图像为base64
+        image_base64 = self.image_to_base64(image)
         
-        # 验证视频URL不能包含中文字符
-        try:
-            video_url.encode('ascii')
-        except UnicodeEncodeError:
-            raise ValueError("视频URL不能包含中文字符，请使用英文URL")
+        # 处理随机种子
+        if seed == -1:
+            seed = random.randint(0, 2147483647)
         
-        # 验证图像尺寸（ComfyUI的IMAGE类型已经处理了大部分验证）
-        if len(image.shape) != 4 or image.shape[0] != 1:
-            raise ValueError("图像输入格式错误，请确保输入的是有效的图像")
-        
-        # 获取图像尺寸进行验证
-        _, height, width, _ = image.shape
-        if width < 200 or width > 4096 or height < 200 or height > 4096:
-            raise ValueError(f"图像尺寸不符合要求，当前尺寸：{width}x{height}，要求：200-4096像素")
-        
-        aspect_ratio = max(width/height, height/width)
-        if aspect_ratio > 3:
-            raise ValueError(f"图像宽高比不符合要求，当前比例：{width}:{height}，要求：1:3至3:1")
-        
-        # 处理图像URL
-        if auto_upload:
-            # 将图像保存为临时文件并上传到服务器
-            print("正在上传图像到服务器...")
-            temp_image_path = save_image_to_temp_file(image, "png")
-            try:
-                image_online_url = upload_file_to_server(temp_image_path)
-                
-                # 验证URL是否可访问
-                print("验证上传的URL是否可访问...")
-                if verify_url_accessibility(image_online_url):
-                    print(f"URL验证成功: {image_online_url}")
-                else:
-                    print(f"警告: URL无法访问，将使用base64编码: {image_online_url}")
-                    image_online_url = image_base64
-                    
-            finally:
-                # 清理临时文件
-                if os.path.exists(temp_image_path):
-                    os.unlink(temp_image_path)
-        else:
-            # 如果用户没有启用自动上传，使用base64编码
-            print("使用base64编码图像数据")
-            image_online_url = image_base64
-        
-        # 处理视频URL
-        if auto_upload and os.path.exists(video_url):
-            print("检测到本地视频文件，正在上传...")
-            video_online_url = upload_file_to_server(video_url)
-            
-            # 验证视频URL是否可访问
-            print("验证上传的视频URL是否可访问...")
-            if verify_url_accessibility(video_online_url):
-                print(f"视频URL验证成功: {video_online_url}")
-            else:
-                print(f"警告: 视频URL无法访问: {video_online_url}")
-                # 对于视频，如果URL不可访问，我们仍然使用它，因为可能只是验证失败但实际可用
-        else:
-            video_online_url = video_url
-        
-        # 构建payload - 根据官方文档格式
         payload = {
             "model": "wan2.2-animate-move",
             "input": {
-                "image_url": image_online_url,  # 使用上传后的在线URL
-                "video_url": video_online_url   # 使用上传后的在线URL或原始URL
+                "image_url": image_base64,
+                "video_url": video_url.strip()
             },
             "parameters": {
                 "check_image": check_image,
-                "mode": mode
+                "mode": mode,
+                "seed": seed
             }
         }
         
-        print(f"开始生成图生动作视频")
-        print(f"使用模式: {mode} ({'标准' if mode == 'wan-std' else '专业'})")
-        print(f"图像检测: {'开启' if check_image else '关闭'}")
-        print(f"图像URL: {image_online_url}")
-        print(f"参考视频URL: {video_online_url}")
-        print(f"图像尺寸: {width}x{height}")
-        print(f"图像宽高比: {width}:{height} ({aspect_ratio:.2f})")
-        
-        # 显示计费信息
-        mode_info = {
-            "wan-std": {"name": "标准模式", "price": "0.4元/秒", "description": "生成速度快，性价比高"},
-            "wan-pro": {"name": "专业模式", "price": "0.6元/秒", "description": "动画流畅度高，效果更佳"}
-        }
-        info = mode_info.get(mode, mode_info["wan-std"])
-        print(f"计费模式: {info['name']} ({info['price']}) - {info['description']}")
-        
+        mode_text = "专业模式" if mode == "wan-pro" else "标准模式"
+        print(f"开始生成图生动作视频，模式: {mode_text}")
+        print(f"参考视频: {video_url}")
         task_id = self.create_task(payload)
         print(f"任务ID: {task_id}")
         
