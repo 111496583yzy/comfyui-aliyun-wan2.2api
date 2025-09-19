@@ -25,6 +25,97 @@ def print_progress_bar(current: int, total: int, prefix: str = '', suffix: str =
     if current == total:
         print()
 
+def upload_file_to_server(file_path: str, upload_url: str = "https://ai.kefan.cn/api/upload/local") -> str:
+    """
+    上传文件到服务器并获取在线URL
+    
+    Args:
+        file_path: 本地文件路径
+        upload_url: 上传接口URL
+        
+    Returns:
+        在线文件URL
+        
+    Raises:
+        Exception: 上传失败时抛出异常
+    """
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+        
+        # 检查文件大小（最大200MB）
+        file_size = os.path.getsize(file_path)
+        if file_size > 200 * 1024 * 1024:  # 200MB
+            raise ValueError(f"文件过大: {file_size / (1024*1024):.1f}MB，最大支持200MB")
+        
+        print(f"开始上传文件: {os.path.basename(file_path)} ({file_size / (1024*1024):.1f}MB)")
+        
+        with open(file_path, 'rb') as f:
+            files = {'file': (os.path.basename(file_path), f)}
+            response = requests.post(upload_url, files=files, timeout=300)  # 5分钟超时
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success') and result.get('code') == 200:
+                online_url = result.get('data')
+                print(f"文件上传成功: {online_url}")
+                return online_url
+            else:
+                raise Exception(f"上传失败: {result.get('message', '未知错误')}")
+        else:
+            raise Exception(f"上传请求失败: HTTP {response.status_code}")
+            
+    except requests.exceptions.Timeout:
+        raise Exception("上传超时，请检查网络连接或文件大小")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"网络请求失败: {str(e)}")
+    except Exception as e:
+        raise Exception(f"上传文件失败: {str(e)}")
+
+def save_image_to_temp_file(image_tensor: torch.Tensor, file_format: str = "png") -> str:
+    """
+    将图像张量保存为临时文件
+    
+    Args:
+        image_tensor: 图像张量 [1, H, W, C]
+        file_format: 文件格式 (png, jpg, jpeg)
+        
+    Returns:
+        临时文件路径
+    """
+    try:
+        # 转换为numpy数组
+        if len(image_tensor.shape) == 4:
+            image_array = image_tensor[0].cpu().numpy()
+        else:
+            image_array = image_tensor.cpu().numpy()
+        
+        # 确保值在0-255范围内
+        if image_array.max() <= 1.0:
+            image_array = (image_array * 255).astype(np.uint8)
+        else:
+            image_array = image_array.astype(np.uint8)
+        
+        # 转换为PIL图像
+        if image_array.shape[2] == 3:  # RGB
+            pil_image = Image.fromarray(image_array, 'RGB')
+        else:  # RGBA
+            pil_image = Image.fromarray(image_array, 'RGBA')
+        
+        # 创建临时文件
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_format}')
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        # 保存图像
+        pil_image.save(temp_path, format=file_format.upper())
+        print(f"图像已保存到临时文件: {temp_path}")
+        
+        return temp_path
+        
+    except Exception as e:
+        raise Exception(f"保存图像失败: {str(e)}")
+
 class AliyunAPIKey:
     """阿里云API密钥配置节点"""
     
@@ -754,6 +845,12 @@ class AliyunAnimateMove(AliyunVideoBase):
                     "label_off": "关闭图像检测",
                     "tooltip": "是否对传入的图片进行检测"
                 }),
+                "auto_upload": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "自动上传文件",
+                    "label_off": "手动提供URL",
+                    "tooltip": "是否自动上传图像和视频文件到服务器获取在线URL"
+                }),
             }
         }
     
@@ -763,7 +860,7 @@ class AliyunAnimateMove(AliyunVideoBase):
     CATEGORY = "Aliyun Video"
     
     def generate_video(self, api_key: str, image: torch.Tensor, video_url: str, 
-                      mode: str = "wan-std", check_image: bool = True) -> Tuple[str]:
+                      mode: str = "wan-std", check_image: bool = True, auto_upload: bool = True) -> Tuple[str]:
         """生成图生动作视频"""
         # 设置API密钥
         self.set_api_key(api_key)
@@ -804,12 +901,35 @@ class AliyunAnimateMove(AliyunVideoBase):
         if aspect_ratio > 3:
             raise ValueError(f"图像宽高比不符合要求，当前比例：{width}:{height}，要求：1:3至3:1")
         
+        # 处理图像URL
+        if auto_upload:
+            # 将图像保存为临时文件并上传到服务器
+            print("正在上传图像到服务器...")
+            temp_image_path = save_image_to_temp_file(image, "png")
+            try:
+                image_online_url = upload_file_to_server(temp_image_path)
+            finally:
+                # 清理临时文件
+                if os.path.exists(temp_image_path):
+                    os.unlink(temp_image_path)
+        else:
+            # 如果用户提供了图像URL，直接使用
+            # 这里需要用户手动提供图像URL，但我们仍然需要base64编码
+            image_online_url = image_base64
+        
+        # 处理视频URL
+        if auto_upload and os.path.exists(video_url):
+            print("检测到本地视频文件，正在上传...")
+            video_online_url = upload_file_to_server(video_url)
+        else:
+            video_online_url = video_url
+        
         # 构建payload - 根据官方文档格式
         payload = {
             "model": "wan2.2-animate-move",
             "input": {
-                "image_url": image_base64,  # 官方文档要求使用image_url字段
-                "video_url": video_url
+                "image_url": image_online_url,  # 使用上传后的在线URL
+                "video_url": video_online_url   # 使用上传后的在线URL或原始URL
             },
             "parameters": {
                 "check_image": check_image,
@@ -820,7 +940,8 @@ class AliyunAnimateMove(AliyunVideoBase):
         print(f"开始生成图生动作视频")
         print(f"使用模式: {mode} ({'标准' if mode == 'wan-std' else '专业'})")
         print(f"图像检测: {'开启' if check_image else '关闭'}")
-        print(f"参考视频URL: {video_url}")
+        print(f"图像URL: {image_online_url}")
+        print(f"参考视频URL: {video_online_url}")
         print(f"图像尺寸: {width}x{height}")
         print(f"图像宽高比: {width}:{height} ({aspect_ratio:.2f})")
         
