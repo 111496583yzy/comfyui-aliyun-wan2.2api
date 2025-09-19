@@ -751,10 +751,10 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
                     "placeholder": "请输入您的DASHSCOPE_API_KEY"
                 }),
                 "image": ("IMAGE",),
-                "video": ("STRING", {
+                "video": (["STRING", "VIDEO"], {
                     "default": "",
                     "multiline": False,
-                    "placeholder": "输入视频文件路径或使用LoadVideo节点"
+                    "placeholder": "输入视频文件路径或连接LoadVideo节点"
                 }),
                 "mode": (["wan-std", "wan-pro"], {
                     "default": "wan-std"
@@ -826,17 +826,38 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
             # 上传失败，使用本地路径
             return f"file://{video_path}"
     
-    def generate_animate_move(self, api_key: str, image: torch.Tensor, video: str, 
+    def generate_animate_move(self, api_key: str, image: torch.Tensor, video, 
                             mode: str, check_image: bool, seed: int) -> Tuple[str, str]:
         """生成图生动作视频"""
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 验证输入
-        if video is None or not video.strip():
-            raise Exception("请输入视频文件路径")
+        # 处理视频输入 - 支持VIDEO类型和STRING类型
+        if isinstance(video, str):
+            # STRING类型输入 - 直接使用文件路径
+            if not video or not video.strip():
+                raise Exception("请输入视频文件路径")
+            video_path = video.strip()
+        else:
+            # VIDEO类型输入 - 从ComfyUI的LoadVideo节点获取路径
+            if hasattr(video, 'get'):
+                # 如果是字典类型，尝试获取路径
+                video_path = video.get('path', '')
+            elif hasattr(video, 'filename'):
+                # 如果有filename属性
+                video_path = video.filename
+            elif isinstance(video, tuple) and len(video) > 0:
+                # 如果是元组，取第一个元素
+                video_path = str(video[0])
+            else:
+                # 尝试转换为字符串
+                video_path = str(video)
+            
+            if not video_path or not os.path.exists(video_path):
+                raise Exception(f"无法获取有效的视频文件路径: {video}")
         
         print("开始处理输入文件...")
+        print(f"视频文件路径: {video_path}")
         
         # 上传图像到服务器
         print("正在上传图像...")
@@ -845,7 +866,7 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
         
         # 上传视频到服务器
         print("正在上传视频...")
-        video_url = self.upload_video_to_server(video.strip())
+        video_url = self.upload_video_to_server(video_path)
         print(f"视频处理完成: {video_url}")
         
         # 处理随机种子
