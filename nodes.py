@@ -750,15 +750,11 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
                     "multiline": False,
                     "placeholder": "请输入您的DASHSCOPE_API_KEY"
                 }),
-                "image_url": ("STRING", {
+                "image": ("IMAGE",),
+                "video": ("STRING", {
                     "default": "",
                     "multiline": False,
-                    "placeholder": "输入图像URL或使用文件上传节点"
-                }),
-                "video_url": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "placeholder": "输入参考视频URL或使用文件上传节点"
+                    "placeholder": "输入视频文件路径或使用LoadVideo节点"
                 }),
                 "mode": (["wan-std", "wan-pro"], {
                     "default": "wan-std"
@@ -780,17 +776,77 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
     FUNCTION = "generate_animate_move"
     CATEGORY = "Aliyun Video"
     
-    def generate_animate_move(self, api_key: str, image_url: str, video_url: str, 
+    def upload_image_to_server(self, image_tensor: torch.Tensor) -> str:
+        """将图像上传到服务器并返回URL"""
+        # 转换图像为base64
+        image_base64 = self.image_to_base64(image_tensor)
+        return image_base64
+    
+    def upload_video_to_server(self, video_path: str) -> str:
+        """将视频上传到服务器并返回URL"""
+        if not video_path or not os.path.exists(video_path):
+            raise Exception(f"视频文件不存在: {video_path}")
+        
+        # 检查文件类型
+        file_ext = os.path.splitext(video_path)[1].lower()
+        allowed_video_exts = ['.mp4', '.avi', '.mov']
+        
+        if file_ext not in allowed_video_exts:
+            raise Exception(f"不支持的视频格式: {file_ext}，支持的格式: {allowed_video_exts}")
+        
+        try:
+            # 上传到ComfyUI文件服务器
+            server_url = "https://ai.comfly.chat"
+            upload_url = f"{server_url}/v1/files"
+            
+            file_name = os.path.basename(video_path)
+            
+            with open(video_path, 'rb') as file:
+                files = {
+                    'file': (file_name, file, mimetypes.guess_type(video_path)[0] or 'video/mp4')
+                }
+                
+                # 发送上传请求
+                response = requests.post(upload_url, files=files, timeout=300)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    file_url = result.get('url', result.get('id'))
+                    if not file_url:
+                        raise Exception("服务器未返回文件URL")
+                    
+                    print(f"视频上传成功: {file_url}")
+                    return file_url
+                else:
+                    raise Exception(f"上传失败: {response.status_code} - {response.text}")
+                    
+        except Exception as e:
+            print(f"上传视频到服务器失败: {e}")
+            print("使用本地文件路径")
+            # 上传失败，使用本地路径
+            return f"file://{video_path}"
+    
+    def generate_animate_move(self, api_key: str, image: torch.Tensor, video: str, 
                             mode: str, check_image: bool, seed: int) -> Tuple[str, str]:
         """生成图生动作视频"""
         # 设置API密钥
         self.set_api_key(api_key)
         
-        # 验证输入URL
-        if not image_url.strip():
-            raise Exception("请输入图像URL")
-        if not video_url.strip():
-            raise Exception("请输入参考视频URL")
+        # 验证输入
+        if video is None or not video.strip():
+            raise Exception("请输入视频文件路径")
+        
+        print("开始处理输入文件...")
+        
+        # 上传图像到服务器
+        print("正在上传图像...")
+        image_url = self.upload_image_to_server(image)
+        print(f"图像处理完成")
+        
+        # 上传视频到服务器
+        print("正在上传视频...")
+        video_url = self.upload_video_to_server(video.strip())
+        print(f"视频处理完成: {video_url}")
         
         # 处理随机种子
         if seed == -1:
@@ -800,8 +856,8 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
         payload = {
             "model": "wan2.2-animate-move",
             "input": {
-                "image_url": image_url.strip(),
-                "video_url": video_url.strip()
+                "image_url": image_url,
+                "video_url": video_url
             },
             "parameters": {
                 "check_image": check_image,
@@ -811,7 +867,7 @@ class AliyunImageToAnimateMove(AliyunVideoBase):
         }
         
         print(f"开始生成图生动作视频")
-        print(f"图像URL: {image_url}")
+        print(f"图像URL: {image_url[:100]}...")
         print(f"视频URL: {video_url}")
         print(f"服务模式: {mode} - {self.MODE_DESCRIPTIONS[mode]}")
         print(f"图像检测: {'开启' if check_image else '关闭'}")
